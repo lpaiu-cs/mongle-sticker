@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QSystemTrayIcon, QMenu, 
                              QGraphicsDropShadowEffect, QFrame,
                              QLabel, QLineEdit, QPushButton, QFileDialog,
-                             QScrollArea, QSizeGrip, QMessageBox, QDialog, QSlider)
-from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QUrl
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QDesktopServices
+                             QScrollArea, QSizeGrip, QMessageBox, QDialog, QSlider, QCheckBox, QFontDialog)
+from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QUrl, QAbstractNativeEventFilter
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QDesktopServices, QFont
 
 APP_NAME = "MongleSticker"
 if sys.platform == 'win32':
@@ -21,6 +21,29 @@ else:
 os.makedirs(appdata_path, exist_ok=True)
 BASE_DIR = appdata_path
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+
+import ctypes
+import ctypes.wintypes
+import threading
+import urllib.request
+import json
+
+APP_VERSION = "v1.1"
+WM_HOTKEY = 0x0312
+
+class GlobalHotkeyFilter(QAbstractNativeEventFilter):
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+
+    def nativeEventFilter(self, eventType, message):
+        if eventType == b"windows_generic_MSG" or eventType == b"windows_dispatcher_MSG":
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == WM_HOTKEY:
+                self.controller.toggle_boss_key()
+                return True, 0
+        return False, 0
+
 
 def get_default_config():
     default_txt = os.path.join(BASE_DIR, "memo.txt")
@@ -147,7 +170,7 @@ class CustomConfirmDialog(QDialog):
             }
             QLabel {
                 color: #5d4037;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
                 font-size: 14px;
                 border: none;
             }
@@ -232,7 +255,7 @@ class StickerDetailDialog(QDialog):
                 background-color: #FFF0F5;
                 border-radius: 15px;
                 border: 2px solid #FFE4E1;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
                 color: #5d4037;
             }
             QLabel {
@@ -321,6 +344,22 @@ class StickerDetailDialog(QDialog):
         self.line_input.textChanged.connect(self.change_lines)
         frame_layout.addWidget(self.line_input)
         
+
+        # Font Settings
+        font_layout = QHBoxLayout()
+        font_layout.addWidget(QLabel("폰트 설정:"))
+        self.font_btn = QPushButton("글꼴 변경")
+        self.font_btn.clicked.connect(self.change_font)
+        font_layout.addWidget(self.font_btn)
+        font_layout.addStretch()
+        frame_layout.addLayout(font_layout)
+        
+        # Markdown Settings
+        self.md_cb = QCheckBox("마크다운(Markdown) 렌더링 사용")
+        self.md_cb.setChecked(self.memo_data.get("use_markdown", False))
+        self.md_cb.stateChanged.connect(self.change_markdown)
+        frame_layout.addWidget(self.md_cb)
+
         preview_label = QLabel("원본 파일 내용 확인 및 미리보기 (Preview)")
         preview_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #5d4037; margin-top: 10px;")
         frame_layout.addWidget(preview_label)
@@ -385,6 +424,19 @@ class StickerDetailDialog(QDialog):
         self.memo_data["opacity"] = value
         self.controller.refresh_sticker_style(self.memo_data["id"])
         
+
+    def change_markdown(self, state):
+        self.memo_data["use_markdown"] = bool(state)
+        self.controller.refresh_sticker_content(self.memo_data["id"])
+
+    def change_font(self):
+        current_font = QFont(self.memo_data.get("font_family", "Malgun Gothic"), self.memo_data.get("font_size", 15))
+        font, ok = QFontDialog.getFont(current_font, self)
+        if ok:
+            self.memo_data["font_family"] = font.family()
+            self.memo_data["font_size"] = font.pointSize()
+            self.controller.refresh_sticker_style(self.memo_data["id"])
+
     def change_lines(self, text):
         self.memo_data["line_range"] = text
         self.update_preview(text)
@@ -451,11 +503,8 @@ class MemoWidget(QWidget):
         self.memo_file = memo_data["memo_file"]
         self.memo_dir = os.path.dirname(self.memo_file) if self.memo_file else ""
         
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint | 
-            Qt.WindowType.WindowStaysOnBottomHint | 
-            Qt.WindowType.Tool
-        )
+        self.on_top = memo_data.get("on_top", False)
+        self.apply_pin_state()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         self.setGeometry(memo_data.get("x", 100), memo_data.get("y", 100), 
@@ -483,7 +532,22 @@ class MemoWidget(QWidget):
         self.size_grip = QSizeGrip(self.frame)
         self.size_grip.setFixedSize(16, 16)
         
+
+        self.on_top = self.memo_data.get("on_top", False)
+        
+        top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(0,0,0,0)
+        top_layout.addStretch()
+        self.pin_btn = QPushButton("📌" if self.on_top else "📎")
+        self.pin_btn.setFixedSize(24, 24)
+        self.pin_btn.setToolTip("항상 위로 고정 (Pin)")
+        self.pin_btn.setStyleSheet("QPushButton { background: transparent; border: none; font-size: 14px; } QPushButton:hover { background: rgba(255,182,193, 100); border-radius: 12px; }")
+        self.pin_btn.clicked.connect(self.toggle_pin)
+        top_layout.addWidget(self.pin_btn)
+        
+        frame_layout.addLayout(top_layout)
         frame_layout.addWidget(self.text_edit)
+
         
         main_layout.addWidget(self.frame)
         
@@ -532,8 +596,8 @@ class MemoWidget(QWidget):
             QTextEdit {{
                 background-color: transparent;
                 color: #5d4037;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-                font-size: 15px;
+                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
+                font-size: {self.memo_data.get('font_size', 15)}px;
                 line-height: 1.6;
                 selection-background-color: #ffb6c1;
                 selection-color: white;
@@ -553,6 +617,22 @@ class MemoWidget(QWidget):
                 height: 0px;
             }}
         """)
+
+
+    def toggle_pin(self):
+        self.on_top = not self.on_top
+        self.memo_data["on_top"] = self.on_top
+        self.pin_btn.setText("📌" if self.on_top else "📎")
+        self.apply_pin_state()
+        self.show()
+
+    def apply_pin_state(self):
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        if self.on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags |= Qt.WindowType.WindowStaysOnBottomHint
+        self.setWindowFlags(flags)
 
     def set_edit_mode(self, enabled):
         self.edit_mode = enabled
@@ -594,7 +674,12 @@ class MemoWidget(QWidget):
             line_range = self.memo_data.get("line_range", "all")
             filtered_content = filter_lines(content, line_range)
             
-            self.text_edit.setPlainText(filtered_content)
+
+            if self.memo_data.get("use_markdown", False):
+                self.text_edit.setMarkdown(filtered_content)
+            else:
+                self.text_edit.setPlainText(filtered_content)
+
         except Exception as e:
             pass
 
@@ -633,14 +718,14 @@ class StickerRow(QFrame):
                 border: 1px solid #FFE4E1;
                 border-radius: 8px;
             }
-            QLabel { border: none; font-size: 13px; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; }
+            QLabel { border: none; font-size: 13px; font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}'; }
             QPushButton {
                 background-color: #f8f9fa;
                 border: 1px solid #ddd;
                 border-radius: 5px;
                 padding: 5px 8px;
                 color: #333;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
             }
             QPushButton:hover {
                 background-color: #e9ecef;
@@ -724,7 +809,7 @@ class SettingsWindow(QWidget):
                 background-color: #FFF0F5;
                 border-radius: 20px;
                 border: 2px solid #FFE4E1;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
                 color: #5d4037;
             }
             QLabel { border: none; }
@@ -808,7 +893,7 @@ class SettingsWindow(QWidget):
         content_layout.setSpacing(10)
         
         header = QLabel("📌 활성화된 스티커 목록")
-        header.setStyleSheet("font-size: 15px; font-weight: bold;")
+        header.setStyleSheet("font-size: {self.memo_data.get('font_size', 15)}px; font-weight: bold;")
         content_layout.addWidget(header)
         
         desc = QLabel("💡 팁: '상세' 버튼을 눌러 스티커 색상과 투명도, 특정 줄을 설정해보세요.")
@@ -950,6 +1035,7 @@ class AppController:
         self.app = app
         self.config = load_config()
         self.widgets = {}  # id -> MemoWidget
+        self.boss_key_active = False
         
         self.tray_icon = QSystemTrayIcon(create_tray_icon(), app)
         self.tray_icon.setToolTip("몽글몽글 스티커")
@@ -959,7 +1045,43 @@ class AppController:
         
         for memo_data in self.config.get("memos", []):
             self.spawn_sticker(memo_data, edit_mode=False)
+            
+        self.check_updates()
 
+    def toggle_boss_key(self):
+        self.boss_key_active = not self.boss_key_active
+        for w in self.widgets.values():
+            if self.boss_key_active:
+                w.hide()
+            else:
+                w.show()
+
+    def check_updates(self):
+        def worker():
+            try:
+                req = urllib.request.Request("https://api.github.com/repos/lpaiu-cs/mongle-sticker/releases/latest")
+                req.add_header("User-Agent", "MongleSticker")
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read())
+                    latest_tag = data.get("tag_name", "")
+                    if latest_tag and latest_tag != APP_VERSION:
+                        self.release_url = data.get("html_url", "")
+                        QTimer.singleShot(2000, lambda: self.tray_icon.showMessage(
+                            "업데이트 알림",
+                            f"새로운 몽글몽글 스티커 {latest_tag} 버전이 출시되었습니다! 클릭해서 다운로드하세요.",
+                            QSystemTrayIcon.MessageIcon.Information,
+                            5000
+                        ))
+                        try: self.tray_icon.messageClicked.disconnect()
+                        except Exception: pass
+                        self.tray_icon.messageClicked.connect(self.open_update_url)
+            except Exception as e:
+                print("Update check failed:", e)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_update_url(self):
+        if hasattr(self, "release_url"):
+            QDesktopServices.openUrl(QUrl(self.release_url))
     def spawn_sticker(self, memo_data, edit_mode=False):
         w = MemoWidget(memo_data)
         w.set_edit_mode(edit_mode)
@@ -1050,13 +1172,30 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     
+    controller = AppController(app)
+    
+    # Register Global Hotkey Filter
+    hotkey_filter = GlobalHotkeyFilter(controller)
+    app.installNativeEventFilter(hotkey_filter)
+    
+    MOD_ALT = 0x0001
+    MOD_CONTROL = 0x0002
+    VK_M = 0x4D
+    try:
+        ctypes.windll.user32.RegisterHotKey(None, 1, MOD_ALT | MOD_CONTROL, VK_M)
+    except Exception as e:
+        print("Hotkey registration failed:", e)
+    
     app_icon = create_tray_icon()
     app.setWindowIcon(app_icon)
     
-    controller = AppController(app)
     controller.show_settings()
     
-    sys.exit(app.exec())
+    ret = app.exec()
+    try:
+        ctypes.windll.user32.UnregisterHotKey(None, 1)
+    except: pass
+    sys.exit(ret)
 
 if __name__ == "__main__":
     main()
