@@ -49,7 +49,7 @@ def get_default_config():
     default_txt = os.path.join(BASE_DIR, "memo.txt")
     if not os.path.exists(default_txt):
         with open(default_txt, "w", encoding="utf-8") as f:
-            f.write("환영합니다! 몽글몽글 메모 스티커입니다.\n\n이 창의 텍스트는 드래그해서 복사할 수 있지만, 수정은 직접 할 수 없습니다.\n내용을 수정하려면 작업 표시줄 우측 하단의 \n트레이 아이콘을 우클릭하여 '기본 메모 파일 열기'를 누르거나,\n설정 창에서 '📝 열기' 버튼을 클릭하세요!\n\n파일을 저장하면 이 화면에 즉시 반영됩니다. 🌸")
+            f.write("환영합니다! 몽글몽글 메모 스티커입니다.\n\n이 창의 텍스트는 드래그해서 복사할 수 있지만, 수정은 직접 할 수 없습니다.\n내용을 수정하려면 작업 표시줄 우측 하단의 \n트레이 아이콘을 우클릭해 '설정' 창을 열고, '📝 열기' 버튼을 클릭하세요!\n\n파일을 저장하면 이 화면에 즉시 반영됩니다. 🌸")
             
     return {
         "memos": [
@@ -1127,9 +1127,6 @@ class AppController:
 
     def setup_tray_menu(self):
         menu = QMenu()
-        open_action = menu.addAction("📝 기본 메모 파일 열기")
-        open_action.triggered.connect(self.open_default_memo)
-        menu.addSeparator()
         settings_action = menu.addAction("⚙️ 스티커 관리 / 크기 조절")
         settings_action.triggered.connect(self.show_settings)
         menu.addSeparator()
@@ -1138,11 +1135,7 @@ class AppController:
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.show()
 
-    def open_default_memo(self):
-        if self.config.get("memos"):
-            first_memo = self.config["memos"][0].get("memo_file")
-            if first_memo and os.path.exists(first_memo):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(first_memo))
+
 
 def create_tray_icon():
     pixmap = QPixmap(64, 64)
