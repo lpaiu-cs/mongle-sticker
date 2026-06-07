@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import ctypes
+import winreg
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QSystemTrayIcon, QMenu, 
                              QGraphicsDropShadowEffect, QFrame,
@@ -11,19 +12,27 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QDesktopServices
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
+APP_NAME = "MongleSticker"
+if sys.platform == 'win32':
+    appdata_path = os.path.join(os.getenv('LOCALAPPDATA', os.getenv('APPDATA', os.path.expanduser('~'))), APP_NAME)
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    
+    appdata_path = os.path.join(os.path.expanduser('~'), f'.{APP_NAME.lower()}')
+
+os.makedirs(appdata_path, exist_ok=True)
+BASE_DIR = appdata_path
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 def get_default_config():
+    default_txt = os.path.join(BASE_DIR, "memo.txt")
+    if not os.path.exists(default_txt):
+        with open(default_txt, "w", encoding="utf-8") as f:
+            f.write("환영합니다! 몽글몽글 메모 스티커입니다.\n\n이 창의 텍스트는 드래그해서 복사할 수 있지만, 수정은 직접 할 수 없습니다.\n내용을 수정하려면 작업 표시줄 우측 하단의 \n트레이 아이콘을 우클릭하여 '기본 메모 파일 열기'를 누르거나,\n설정 창에서 '📝 열기' 버튼을 클릭하세요!\n\n파일을 저장하면 이 화면에 즉시 반영됩니다. 🌸")
+            
     return {
         "memos": [
             {
                 "id": str(uuid.uuid4()),
-                "memo_file": os.path.join(BASE_DIR, "memo.txt"),
+                "memo_file": default_txt,
                 "x": 100,
                 "y": 100,
                 "w": 320,
@@ -34,6 +43,41 @@ def get_default_config():
             }
         ]
     }
+
+def check_autostart():
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    app_name = "MongleMemoSticker"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, app_name)
+        winreg.CloseKey(key)
+        return True
+    except FileNotFoundError:
+        return False
+
+def set_autostart(enable=True):
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    app_name = "MongleMemoSticker"
+    
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable
+    else:
+        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+        
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+        if enable:
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+        else:
+            try:
+                winreg.DeleteValue(key, app_name)
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print("Autostart error:", e)
+        return False
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -624,7 +668,12 @@ class StickerRow(QFrame):
         detail_btn.clicked.connect(self.open_detail)
         layout.addWidget(detail_btn)
         
-        change_btn = QPushButton("📂 파일")
+        open_btn = QPushButton("📝 열기")
+        open_btn.setToolTip("연결된 텍스트 파일 열기")
+        open_btn.clicked.connect(self.open_file)
+        layout.addWidget(open_btn)
+        
+        change_btn = QPushButton("📂 변경")
         change_btn.setToolTip("연결할 텍스트 파일 변경")
         change_btn.clicked.connect(self.change_file)
         layout.addWidget(change_btn)
@@ -638,6 +687,11 @@ class StickerRow(QFrame):
     def open_detail(self):
         dialog = StickerDetailDialog(self.memo_data, self.parent_window.controller, self.parent_window)
         dialog.exec()
+
+    def open_file(self):
+        file_path = self.memo_data.get("memo_file", "")
+        if file_path and os.path.exists(file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
 
     def change_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "메모 파일 선택", BASE_DIR, "Text Files (*.txt);;All Files (*)")
@@ -777,6 +831,12 @@ class SettingsWindow(QWidget):
         add_btn.clicked.connect(self.add_new_sticker)
         content_layout.addWidget(add_btn)
         
+        self.startup_btn = QPushButton()
+        self.startup_btn.setFixedHeight(45)
+        self.update_startup_btn_text()
+        self.startup_btn.clicked.connect(self.toggle_startup)
+        content_layout.addWidget(self.startup_btn)
+        
         done_btn = QPushButton("✅ 설정 완료 및 모두 저장")
         done_btn.setObjectName("PrimaryBtn")
         done_btn.clicked.connect(self.close)
@@ -844,6 +904,42 @@ class SettingsWindow(QWidget):
         self.load_list()
         self.controller.set_all_edit_mode(True)
 
+    def update_startup_btn_text(self):
+        if check_autostart():
+            self.startup_btn.setText("🚀 윈도우 시작 시 자동 실행: ON")
+            self.startup_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e6f7ff;
+                    border: 1px solid #91d5ff;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    color: #096dd9;
+                }
+                QPushButton:hover {
+                    background-color: #bae7ff;
+                }
+            """)
+        else:
+            self.startup_btn.setText("🚀 윈도우 시작 시 자동 실행: OFF")
+            self.startup_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f5f5f5;
+                    border: 1px solid #d9d9d9;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    color: #8c8c8c;
+                }
+                QPushButton:hover {
+                    background-color: #e8e8e8;
+                }
+            """)
+
+    def toggle_startup(self):
+        current = check_autostart()
+        set_autostart(not current)
+        self.update_startup_btn_text()
+
     def closeEvent(self, event):
         self.controller.save_all_geometries()
         self.controller.set_all_edit_mode(False)
@@ -909,6 +1005,9 @@ class AppController:
 
     def setup_tray_menu(self):
         menu = QMenu()
+        open_action = menu.addAction("📝 기본 메모 파일 열기")
+        open_action.triggered.connect(self.open_default_memo)
+        menu.addSeparator()
         settings_action = menu.addAction("⚙️ 스티커 관리 / 크기 조절")
         settings_action.triggered.connect(self.show_settings)
         menu.addSeparator()
@@ -916,6 +1015,12 @@ class AppController:
         exit_action.triggered.connect(self.app.quit)
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.show()
+
+    def open_default_memo(self):
+        if self.config.get("memos"):
+            first_memo = self.config["memos"][0].get("memo_file")
+            if first_memo and os.path.exists(first_memo):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(first_memo))
 
 def create_tray_icon():
     pixmap = QPixmap(64, 64)
