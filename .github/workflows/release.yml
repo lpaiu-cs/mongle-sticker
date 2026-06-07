@@ -29,7 +29,7 @@ jobs:
 
       - name: Build Executable with PyInstaller
         run: |
-          pyinstaller --noconsole --onefile --icon=icon.ico --name "몽글몽글 스티커" main.py
+          pyinstaller --noconsole --onefile --icon=icon.ico --version-file version.txt --name "몽글몽글 스티커" main.py
 
       - name: Upload Artifact for Release Job
         uses: actions/upload-artifact@v4
