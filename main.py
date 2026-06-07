@@ -1172,6 +1172,19 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     
+    # 툴팁(QToolTip) 블랙박스 버그 방지용 글로벌 스타일시트 적용
+    app.setStyleSheet("""
+        QToolTip {
+            background-color: white;
+            color: #333333;
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: 'Malgun Gothic';
+            padding: 2px 4px;
+        }
+    """)
+    
     controller = AppController(app)
     
     # Register Global Hotkey Filter
