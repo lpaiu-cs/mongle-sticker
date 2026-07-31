@@ -1,35 +1,50 @@
-import sys
-import os
-import json
-import uuid
 import ctypes
+import ctypes.wintypes
+import json
+import logging
+import os
+import re
+import sys
+import threading
+import urllib.request
+import uuid
 import winreg
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QTextEdit, QSystemTrayIcon, QMenu, 
-                             QGraphicsDropShadowEffect, QFrame,
-                             QLabel, QLineEdit, QPushButton, QFileDialog,
-                             QScrollArea, QSizeGrip, QMessageBox, QDialog, QSlider, QCheckBox, QFontDialog)
-from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QUrl, QAbstractNativeEventFilter
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QDesktopServices, QFont
+
+from PyQt6.QtCore import (QAbstractNativeEventFilter, QFileSystemWatcher, QObject,
+                          QTimer, QUrl, Qt, pyqtSignal)
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
+                             QFontDialog, QFrame, QGraphicsDropShadowEffect,
+                             QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
+                             QPushButton, QScrollArea, QSizeGrip, QSlider,
+                             QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget)
+
+from _version import __version__ as VERSION
 
 APP_NAME = "MongleSticker"
-if sys.platform == 'win32':
-    appdata_path = os.path.join(os.getenv('LOCALAPPDATA', os.getenv('APPDATA', os.path.expanduser('~'))), APP_NAME)
+APP_VERSION = f"v{VERSION}"
+WM_HOTKEY = 0x0312
+HOTKEY_ID = 1
+
+if sys.platform == "win32":
+    appdata_path = os.path.join(
+        os.getenv("LOCALAPPDATA", os.getenv("APPDATA", os.path.expanduser("~"))),
+        APP_NAME,
+    )
 else:
-    appdata_path = os.path.join(os.path.expanduser('~'), f'.{APP_NAME.lower()}')
+    appdata_path = os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower()}")
 
 os.makedirs(appdata_path, exist_ok=True)
 BASE_DIR = appdata_path
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+LOG_FILE = os.path.join(BASE_DIR, "mongle-sticker.log")
 
-import ctypes
-import ctypes.wintypes
-import threading
-import urllib.request
-import json
-
-APP_VERSION = "v1.1"
-WM_HOTKEY = 0x0312
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(APP_NAME)
 
 class GlobalHotkeyFilter(QAbstractNativeEventFilter):
     def __init__(self, controller):
@@ -43,6 +58,47 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
                 self.controller.toggle_boss_key()
                 return True, 0
         return False, 0
+
+
+def parse_version(value):
+    """Convert release tags such as v1.2.3 to comparable integer tuples."""
+    match = re.fullmatch(r"[vV]?(\d+(?:\.\d+)*)", value.strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def is_newer_version(candidate, current):
+    candidate_parts = parse_version(candidate)
+    current_parts = parse_version(current)
+    if candidate_parts is None or current_parts is None:
+        return False
+
+    width = max(len(candidate_parts), len(current_parts))
+    candidate_parts += (0,) * (width - len(candidate_parts))
+    current_parts += (0,) * (width - len(current_parts))
+    return candidate_parts > current_parts
+
+
+class UpdateChecker(QObject):
+    update_available = pyqtSignal(str, str)
+    check_failed = pyqtSignal(str)
+
+    def check(self):
+        try:
+            request = urllib.request.Request(
+                "https://api.github.com/repos/lpaiu-cs/mongle-sticker/releases/latest",
+                headers={"User-Agent": APP_NAME},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+
+            latest_tag = data.get("tag_name", "")
+            release_url = data.get("html_url", "")
+            if release_url and is_newer_version(latest_tag, APP_VERSION):
+                self.update_available.emit(latest_tag, release_url)
+        except Exception as error:
+            self.check_failed.emit(str(error))
 
 
 def get_default_config():
@@ -71,59 +127,101 @@ def check_autostart():
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     app_name = "MongleMemoSticker"
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
-        winreg.QueryValueEx(key, app_name)
-        winreg.CloseKey(key)
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ
+        ) as key:
+            winreg.QueryValueEx(key, app_name)
         return True
     except FileNotFoundError:
         return False
+    except OSError:
+        logger.exception("Failed to read the Windows autostart setting")
+        return False
+
 
 def set_autostart(enable=True):
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     app_name = "MongleMemoSticker"
-    
-    if getattr(sys, 'frozen', False):
-        exe_path = sys.executable
+
+    if getattr(sys, "frozen", False):
+        command = f'"{sys.executable}"'
     else:
-        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
-        
+        command = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-        if enable:
-            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
-        else:
-            try:
-                winreg.DeleteValue(key, app_name)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS
+        ) as key:
+            if enable:
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                except FileNotFoundError:
+                    pass
         return True
-    except Exception as e:
-        print("Autostart error:", e)
+    except OSError:
+        logger.exception("Failed to update the Windows autostart setting")
         return False
 
+
+def migrate_config(config):
+    if not isinstance(config, dict) or not isinstance(config.get("memos"), list):
+        raise ValueError("Invalid configuration structure")
+
+    for memo in config["memos"]:
+        if not isinstance(memo, dict):
+            raise ValueError("Invalid memo configuration")
+        memo.setdefault("id", str(uuid.uuid4()))
+        memo.setdefault("memo_file", "")
+        memo.setdefault("color", "#FFF0F5")
+        memo.setdefault("opacity", 95)
+        memo.setdefault("line_range", "all")
+        memo.setdefault("use_markdown", False)
+        memo.setdefault("font_family", "Malgun Gothic")
+        memo.setdefault("font_size", 15)
+        memo.setdefault("on_top", False)
+    return config
+
+
 def load_config():
-    if os.path.exists(CONFIG_FILE):
+    if not os.path.exists(CONFIG_FILE):
+        return get_default_config()
+
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+            return migrate_config(json.load(file))
+    except json.JSONDecodeError:
+        logger.exception("Configuration JSON is corrupted: %s", CONFIG_FILE)
+        corrupt_file = f"{CONFIG_FILE}.corrupt"
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                if "memos" not in config:
-                    return get_default_config()
-                
-                # 마이그레이션: 이전 버전 설정 파일에 누락된 필드 채우기
-                for m in config["memos"]:
-                    if "color" not in m: m["color"] = "#FFF0F5"
-                    if "opacity" not in m: m["opacity"] = 95
-                    if "line_range" not in m: m["line_range"] = "all"
-                    
-                return config
-        except:
-            pass
+            os.replace(CONFIG_FILE, corrupt_file)
+            logger.error("Corrupted configuration moved to %s", corrupt_file)
+        except OSError:
+            logger.exception("Failed to preserve the corrupted configuration")
+    except (OSError, TypeError, ValueError):
+        logger.exception("Failed to load configuration: %s", CONFIG_FILE)
+
     return get_default_config()
 
+
 def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=4)
+    temporary_file = f"{CONFIG_FILE}.tmp"
+    try:
+        with open(temporary_file, "w", encoding="utf-8") as file:
+            json.dump(config, file, ensure_ascii=False, indent=4)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_file, CONFIG_FILE)
+        return True
+    except (OSError, TypeError, ValueError):
+        logger.exception("Failed to save configuration: %s", CONFIG_FILE)
+        try:
+            if os.path.exists(temporary_file):
+                os.remove(temporary_file)
+        except OSError:
+            logger.exception("Failed to remove temporary configuration file")
+        return False
 
 def filter_lines(content, line_range):
     if not line_range or line_range.strip().lower() == "all":
@@ -237,10 +335,10 @@ class StickerDetailDialog(QDialog):
         self.file_lines = []
         if self.memo_file and os.path.exists(self.memo_file):
             try:
-                with open(self.memo_file, "r", encoding="utf-8") as f:
-                    self.file_lines = f.read().split('\n')
-            except Exception:
-                pass
+                with open(self.memo_file, "r", encoding="utf-8") as file:
+                    self.file_lines = file.read().split("\n")
+            except (OSError, UnicodeError):
+                logger.exception("Failed to load detail preview: %s", self.memo_file)
         
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -681,8 +779,11 @@ class MemoWidget(QWidget):
             else:
                 self.text_edit.setPlainText(filtered_content)
 
-        except Exception as e:
-            pass
+        except (OSError, UnicodeError):
+            logger.exception("Failed to load memo file: %s", self.memo_file)
+            self.text_edit.setPlainText(
+                f"메모 파일을 불러오지 못했습니다.\n{self.memo_file}"
+            )
 
     def on_file_changed(self, path):
         QTimer.singleShot(100, self.load_memo)
@@ -1024,66 +1125,95 @@ class SettingsWindow(QWidget):
 
     def toggle_startup(self):
         current = check_autostart()
-        set_autostart(not current)
+        if not set_autostart(not current):
+            QMessageBox.warning(
+                self,
+                "자동 실행 설정 실패",
+                "Windows 시작 프로그램 설정을 변경하지 못했습니다.\n"
+                f"자세한 내용은 {LOG_FILE} 파일을 확인해주세요.",
+            )
         self.update_startup_btn_text()
 
     def closeEvent(self, event):
-        self.controller.save_all_geometries()
+        if not self.controller.save_all_geometries():
+            QMessageBox.warning(
+                self,
+                "설정 저장 실패",
+                "설정을 저장하지 못했습니다.\n"
+                f"자세한 내용은 {LOG_FILE} 파일을 확인해주세요.",
+            )
         self.controller.set_all_edit_mode(False)
         event.accept()
 
-class AppController:
+class AppController(QObject):
     def __init__(self, app):
+        super().__init__()
         self.app = app
         self.config = load_config()
         self.widgets = {}  # id -> MemoWidget
         self.boss_key_active = False
-        
+        self.release_url = ""
+        self.is_shutting_down = False
+
         self.tray_icon = QSystemTrayIcon(create_tray_icon(), app)
         self.tray_icon.setToolTip("몽글몽글 스티커")
+        self.tray_icon.messageClicked.connect(self.open_update_url)
         self.setup_tray_menu()
-        
+
         self.settings_window = SettingsWindow(self)
-        
+
         for memo_data in self.config.get("memos", []):
             self.spawn_sticker(memo_data, edit_mode=False)
-            
+
+        self.update_checker = UpdateChecker()
+        self.update_checker.update_available.connect(self.notify_update)
+        self.update_checker.check_failed.connect(self.on_update_check_failed)
         self.check_updates()
 
     def toggle_boss_key(self):
         self.boss_key_active = not self.boss_key_active
-        for w in self.widgets.values():
+        for widget in self.widgets.values():
             if self.boss_key_active:
-                w.hide()
+                widget.hide()
             else:
-                w.show()
+                widget.show()
 
     def check_updates(self):
-        def worker():
-            try:
-                req = urllib.request.Request("https://api.github.com/repos/lpaiu-cs/mongle-sticker/releases/latest")
-                req.add_header("User-Agent", "MongleSticker")
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read())
-                    latest_tag = data.get("tag_name", "")
-                    if latest_tag and latest_tag != APP_VERSION:
-                        self.release_url = data.get("html_url", "")
-                        QTimer.singleShot(2000, lambda: self.tray_icon.showMessage(
-                            "업데이트 알림",
-                            f"새로운 몽글몽글 스티커 {latest_tag} 버전이 출시되었습니다! 클릭해서 다운로드하세요.",
-                            QSystemTrayIcon.MessageIcon.Information,
-                            5000
-                        ))
-                        try: self.tray_icon.messageClicked.disconnect()
-                        except Exception: pass
-                        self.tray_icon.messageClicked.connect(self.open_update_url)
-            except Exception as e:
-                print("Update check failed:", e)
-        threading.Thread(target=worker, daemon=True).start()
+        self.update_thread = threading.Thread(
+            target=self.update_checker.check,
+            name="mongle-update-check",
+            daemon=True,
+        )
+        self.update_thread.start()
+
+    def notify_update(self, latest_tag, release_url):
+        self.release_url = release_url
+        QTimer.singleShot(
+            2000,
+            lambda: self.tray_icon.showMessage(
+                "업데이트 알림",
+                f"새로운 몽글몽글 스티커 {latest_tag} 버전이 출시되었습니다! "
+                "클릭해서 다운로드하세요.",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            ),
+        )
+
+    def on_update_check_failed(self, message):
+        logger.warning("Update check failed: %s", message)
 
     def open_update_url(self):
-        if hasattr(self, "release_url"):
+        if self.release_url:
             QDesktopServices.openUrl(QUrl(self.release_url))
+
+    def shutdown(self):
+        if self.is_shutting_down:
+            return
+        self.is_shutting_down = True
+        if not self.save_all_geometries():
+            logger.error("Application exited without saving the latest configuration")
+        self.tray_icon.hide()
+
     def spawn_sticker(self, memo_data, edit_mode=False):
         w = MemoWidget(memo_data)
         w.set_edit_mode(edit_mode)
@@ -1112,15 +1242,15 @@ class AppController:
             w.set_edit_mode(enabled)
 
     def save_all_geometries(self):
-        for memo_id, w in self.widgets.items():
-            geo = w.geometry()
+        for memo_id, widget in self.widgets.items():
+            geometry = widget.geometry()
             for memo_data in self.config["memos"]:
                 if memo_data["id"] == memo_id:
-                    memo_data["x"] = geo.x()
-                    memo_data["y"] = geo.y()
-                    memo_data["w"] = geo.width()
-                    memo_data["h"] = geo.height()
-        save_config(self.config)
+                    memo_data["x"] = geometry.x()
+                    memo_data["y"] = geometry.y()
+                    memo_data["w"] = geometry.width()
+                    memo_data["h"] = geometry.height()
+        return save_config(self.config)
 
     def show_settings(self):
         self.settings_window.show()
@@ -1159,14 +1289,16 @@ def create_tray_icon():
 
 def main():
     try:
-        myappid = 'monglemongle.memosticker.v1'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        # 버전을 포함하지 않는 고정 식별자여야 합니다. 버전마다 바뀌면 사용자가
+        # 작업 표시줄에 고정한 항목과 알림 그룹이 릴리스마다 초기화됩니다.
+        app_id = "monglemongle.memosticker"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
-        pass
+        logger.exception("Failed to set the Windows application ID")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    
+
     # 툴팁(QToolTip) 블랙박스 버그 방지용 글로벌 스타일시트 적용
     app.setStyleSheet("""
         QToolTip {
@@ -1179,31 +1311,49 @@ def main():
             padding: 2px 4px;
         }
     """)
-    
+
     controller = AppController(app)
-    
-    # Register Global Hotkey Filter
+    app.aboutToQuit.connect(controller.shutdown)
+
     hotkey_filter = GlobalHotkeyFilter(controller)
     app.installNativeEventFilter(hotkey_filter)
-    
-    MOD_ALT = 0x0001
-    MOD_CONTROL = 0x0002
-    VK_M = 0x4D
+
+    mod_alt = 0x0001
+    mod_control = 0x0002
+    virtual_key_m = 0x4D
+    hotkey_registered = False
     try:
-        ctypes.windll.user32.RegisterHotKey(None, 1, MOD_ALT | MOD_CONTROL, VK_M)
-    except Exception as e:
-        print("Hotkey registration failed:", e)
-    
-    app_icon = create_tray_icon()
-    app.setWindowIcon(app_icon)
-    
+        hotkey_registered = bool(
+            ctypes.windll.user32.RegisterHotKey(
+                None, HOTKEY_ID, mod_alt | mod_control, virtual_key_m
+            )
+        )
+    except Exception:
+        logger.exception("Global hotkey registration raised an error")
+
+    if not hotkey_registered:
+        logger.warning("Global hotkey Ctrl+Alt+M could not be registered")
+        QTimer.singleShot(
+            0,
+            lambda: controller.tray_icon.showMessage(
+                "단축키 등록 실패",
+                "Ctrl+Alt+M을 다른 프로그램이 사용 중일 수 있습니다.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
+            ),
+        )
+
+    app.setWindowIcon(create_tray_icon())
     controller.show_settings()
-    
-    ret = app.exec()
-    try:
-        ctypes.windll.user32.UnregisterHotKey(None, 1)
-    except: pass
-    sys.exit(ret)
+
+    result = app.exec()
+    if hotkey_registered:
+        try:
+            ctypes.windll.user32.UnregisterHotKey(None, HOTKEY_ID)
+        except Exception:
+            logger.exception("Failed to unregister the global hotkey")
+    sys.exit(result)
+
 
 if __name__ == "__main__":
     main()
