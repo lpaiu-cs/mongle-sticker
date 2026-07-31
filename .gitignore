@@ -17,6 +17,9 @@ build/
 dist/
 *.spec
 
+# Generated from _version.py by tools/make_version_file.py
+version.txt
+
 # User specific config and data
 config.json
 memo*.txt
