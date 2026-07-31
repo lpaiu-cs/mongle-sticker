@@ -170,7 +170,7 @@ class CustomConfirmDialog(QDialog):
             }
             QLabel {
                 color: #5d4037;
-                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
+                font-family: 'Malgun Gothic';
                 font-size: 14px;
                 border: none;
             }
@@ -250,12 +250,13 @@ class StickerDetailDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         
         self.frame = QFrame()
+        font_family = self.memo_data.get("font_family", "Malgun Gothic")
         self.frame.setStyleSheet("""
             QFrame#MainFrame {
                 background-color: #FFF0F5;
                 border-radius: 15px;
                 border: 2px solid #FFE4E1;
-                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
+                font-family: '__FONT_FAMILY__';
                 color: #5d4037;
             }
             QLabel {
@@ -288,7 +289,7 @@ class StickerDetailDialog(QDialog):
             QPushButton#PrimaryBtn:hover {
                 background-color: #FF9AA2;
             }
-        """)
+        """.replace("__FONT_FAMILY__", font_family))
         self.frame.setObjectName("MainFrame")
         
         shadow = QGraphicsDropShadowEffect(self)
@@ -712,20 +713,21 @@ class StickerRow(QFrame):
         self.memo_data = memo_data
         self.parent_window = parent_window
         
+        font_family = self.memo_data.get("font_family", "Malgun Gothic")
         self.setStyleSheet("""
             QFrame {
                 background-color: white;
                 border: 1px solid #FFE4E1;
                 border-radius: 8px;
             }
-            QLabel { border: none; font-size: 13px; font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}'; }
+            QLabel { border: none; font-size: 13px; font-family: '__FONT_FAMILY__'; }
             QPushButton {
                 background-color: #f8f9fa;
                 border: 1px solid #ddd;
                 border-radius: 5px;
                 padding: 5px 8px;
                 color: #333;
-                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
+                font-family: '__FONT_FAMILY__';
             }
             QPushButton:hover {
                 background-color: #e9ecef;
@@ -738,7 +740,7 @@ class StickerRow(QFrame):
             QPushButton#RemoveBtn:hover {
                 background-color: #ffcdd2;
             }
-        """)
+        """.replace("__FONT_FAMILY__", font_family))
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -809,7 +811,7 @@ class SettingsWindow(QWidget):
                 background-color: #FFF0F5;
                 border-radius: 20px;
                 border: 2px solid #FFE4E1;
-                font-family: '{self.memo_data.get('font_family', 'Malgun Gothic')}';
+                font-family: 'Malgun Gothic';
                 color: #5d4037;
             }
             QLabel { border: none; }
@@ -893,7 +895,7 @@ class SettingsWindow(QWidget):
         content_layout.setSpacing(10)
         
         header = QLabel("📌 활성화된 스티커 목록")
-        header.setStyleSheet("font-size: {self.memo_data.get('font_size', 15)}px; font-weight: bold;")
+        header.setStyleSheet("font-size: 15px; font-weight: bold;")
         content_layout.addWidget(header)
         
         desc = QLabel("💡 팁: '상세' 버튼을 눌러 스티커 색상과 투명도, 특정 줄을 설정해보세요.")
