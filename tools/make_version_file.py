@@ -6,6 +6,9 @@
 
 ``--check`` 옵션을 주면 파일을 쓰지 않고, 기존 ``version.txt``가 현재 버전과
 일치하는지만 검사합니다(불일치 시 종료 코드 1).
+
+출력 문자열은 ASCII로만 씁니다. CI 러너의 Python은 stdout 인코딩이 cp1252라
+한글을 출력하면 UnicodeEncodeError로 죽습니다.
 """
 
 from __future__ import annotations
@@ -96,11 +99,13 @@ def render() -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Generate version.txt from _version.py."
+    )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="파일을 쓰지 않고 기존 version.txt가 최신인지만 확인합니다.",
+        help="verify the existing version.txt is up to date without writing it",
     )
     arguments = parser.parse_args()
 
@@ -108,22 +113,22 @@ def main() -> int:
 
     if arguments.check:
         if not OUTPUT_PATH.exists():
-            print(f"version.txt가 없습니다: {OUTPUT_PATH}", file=sys.stderr)
+            print(f"version.txt is missing: {OUTPUT_PATH}", file=sys.stderr)
             return 1
         actual = OUTPUT_PATH.read_text(encoding="utf-8")
         if actual != expected:
             print(
-                "version.txt가 _version.py와 일치하지 않습니다. "
-                "python tools/make_version_file.py 를 실행하세요.",
+                "version.txt does not match _version.py. "
+                "Run: python tools/make_version_file.py",
                 file=sys.stderr,
             )
             return 1
-        print(f"version.txt는 최신입니다 (v{_version.__version__}).")
+        print(f"version.txt is up to date (v{_version.__version__}).")
         return 0
 
     # PyInstaller는 버전 리소스 파일을 BOM 없는 UTF-8로 읽습니다.
     OUTPUT_PATH.write_text(expected, encoding="utf-8", newline="\n")
-    print(f"{OUTPUT_PATH} 생성 완료 (v{_version.__version__}).")
+    print(f"Wrote {OUTPUT_PATH} (v{_version.__version__}).")
     return 0
 
 
