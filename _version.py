@@ -11,7 +11,7 @@
 따라서 태그, 실행 파일 메타데이터, 앱이 보고하는 버전이 어긋날 수 없습니다.
 """
 
-__version__ = "1.1.3"
+__version__ = "1.2.0"
 
 COMPANY_NAME = "Mongle Studio"
 PRODUCT_NAME = "몽글몽글 메모 스티커"

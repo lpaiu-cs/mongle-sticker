@@ -9,6 +9,7 @@ import threading
 import urllib.request
 import uuid
 import winreg
+from logging.handlers import RotatingFileHandler
 
 from PyQt6.QtCore import (QAbstractNativeEventFilter, QFileSystemWatcher, QObject,
                           QTimer, QUrl, Qt, pyqtSignal)
@@ -39,11 +40,12 @@ BASE_DIR = appdata_path
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 LOG_FILE = os.path.join(BASE_DIR, "mongle-sticker.log")
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+_log_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
 )
+_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logging.getLogger().addHandler(_log_handler)
+logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(APP_NAME)
 
 class GlobalHotkeyFilter(QAbstractNativeEventFilter):
@@ -61,8 +63,12 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
 
 
 def parse_version(value):
-    """Convert release tags such as v1.2.3 to comparable integer tuples."""
-    match = re.fullmatch(r"[vV]?(\d+(?:\.\d+)*)", value.strip())
+    """Convert release tags such as v1.2.3 to comparable integer tuples.
+
+    Pre-release/build suffixes (e.g. v1.2.3-beta.1) are ignored so tagged
+    betas still compare by their numeric core.
+    """
+    match = re.fullmatch(r"[vV]?(\d+(?:\.\d+)*)(?:[-+][0-9A-Za-z.+-]+)?", value.strip())
     if not match:
         return None
     return tuple(int(part) for part in match.group(1).split("."))
@@ -101,12 +107,31 @@ class UpdateChecker(QObject):
             self.check_failed.emit(str(error))
 
 
-def get_default_config():
+DEFAULT_MEMO_TEXT = (
+    "환영합니다! 몽글몽글 메모 스티커입니다.\n\n"
+    "이 창의 텍스트는 드래그해서 복사할 수 있지만, 수정은 직접 할 수 없습니다.\n"
+    "내용을 수정하려면 작업 표시줄 우측 하단의 \n"
+    "트레이 아이콘을 우클릭해 '설정' 창을 열고, '📝 열기' 버튼을 클릭하세요!\n\n"
+    "파일을 저장하면 이 화면에 즉시 반영됩니다. 🌸"
+)
+
+
+def ensure_default_memo_file():
+    """첫 실행 때 한 번 환영 메모 파일을 만듭니다."""
     default_txt = os.path.join(BASE_DIR, "memo.txt")
-    if not os.path.exists(default_txt):
+    if os.path.exists(default_txt):
+        return
+    try:
         with open(default_txt, "w", encoding="utf-8") as f:
-            f.write("환영합니다! 몽글몽글 메모 스티커입니다.\n\n이 창의 텍스트는 드래그해서 복사할 수 있지만, 수정은 직접 할 수 없습니다.\n내용을 수정하려면 작업 표시줄 우측 하단의 \n트레이 아이콘을 우클릭해 '설정' 창을 열고, '📝 열기' 버튼을 클릭하세요!\n\n파일을 저장하면 이 화면에 즉시 반영됩니다. 🌸")
-            
+            f.write(DEFAULT_MEMO_TEXT)
+    except OSError:
+        logger.exception("Failed to create the default memo file: %s", default_txt)
+
+
+def get_default_config():
+    """기본 설정값만 묶어 돌려줍니다. 파일 생성 같은 부작용이 없습니다."""
+    default_txt = os.path.join(BASE_DIR, "memo.txt")
+
     return {
         "memos": [
             {
@@ -139,14 +164,23 @@ def check_autostart():
         return False
 
 
+def _autostart_command():
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+
+    # 소스 실행 시 시작 프로그램에 콘솔 창이 뜨지 않도록 pythonw를 선호합니다.
+    # 개발 환경(venv 위치)을 옮기면 자동 실행 등록을 다시 해야 합니다.
+    interpreter = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    if not os.path.exists(interpreter):
+        interpreter = sys.executable
+    return f'"{interpreter}" "{os.path.abspath(__file__)}"'
+
+
 def set_autostart(enable=True):
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     app_name = "MongleMemoSticker"
 
-    if getattr(sys, "frozen", False):
-        command = f'"{sys.executable}"'
-    else:
-        command = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+    command = _autostart_command()
 
     try:
         with winreg.OpenKey(
@@ -186,7 +220,8 @@ def migrate_config(config):
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        return get_default_config()
+        ensure_default_memo_file()
+        return migrate_config(get_default_config())
 
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as file:
@@ -223,31 +258,38 @@ def save_config(config):
             logger.exception("Failed to remove temporary configuration file")
         return False
 
-def filter_lines(content, line_range):
-    if not line_range or line_range.strip().lower() == "all":
-        return content
-    
-    lines = content.split('\n')
+def parse_line_range(line_range, total):
+    """줄 범위 문자열을 0-based 인덱스 집합으로 바꿉니다.
+
+    'all' 또는 빈 값은 전체, '3'은 한 줄, '1-5'는 범위를 뜻합니다.
+    문법이 잘못되면(예: '1-2-3') None을 반환합니다.
+    """
+    text = (line_range or "").strip().lower()
+    if not text or text == "all":
+        return set(range(total))
+
+    parts = text.split("-")
     try:
-        line_range = line_range.strip()
-        if '-' in line_range:
-            parts = line_range.split('-')
+        if len(parts) == 1:
+            index = int(parts[0])
+            return {index - 1} if 0 < index <= total else set()
+        if len(parts) == 2:
             start = int(parts[0]) if parts[0] else 1
-            end = int(parts[1]) if parts[1] else len(lines)
-            
-            # 1-based index to 0-based index
-            start_idx = max(0, start - 1)
-            end_idx = min(len(lines), end)
-            return '\n'.join(lines[start_idx:end_idx])
-        else:
-            idx = int(line_range)
-            if 0 < idx <= len(lines):
-                return lines[idx - 1]
-            else:
-                return ""
-    except Exception:
-        # 문법 오류 등이 발생하면 전체 반환
+            end = int(parts[1]) if parts[1] else total
+            return set(range(max(0, start - 1), min(total, end)))
+    except ValueError:
+        pass
+    return None
+
+
+def filter_lines(content, line_range):
+    selection = parse_line_range(line_range, len(content.split("\n")))
+    if selection is None:
+        # 해석할 수 없는 문법은 전체를 반환합니다.
         return content
+
+    lines = content.split("\n")
+    return "\n".join(lines[i] for i in sorted(selection))
 
 
 class CustomConfirmDialog(QDialog):
@@ -440,6 +482,11 @@ class StickerDetailDialog(QDialog):
         
         self.line_input = QLineEdit()
         self.line_input.setText(str(self.memo_data.get("line_range", "all")))
+        # 키 입력마다 스티커가 파일을 다시 읽지 않도록 반영은 디바운스합니다.
+        self.apply_lines_timer = QTimer(self)
+        self.apply_lines_timer.setSingleShot(True)
+        self.apply_lines_timer.setInterval(300)
+        self.apply_lines_timer.timeout.connect(self.apply_line_range)
         self.line_input.textChanged.connect(self.change_lines)
         frame_layout.addWidget(self.line_input)
         
@@ -539,6 +586,9 @@ class StickerDetailDialog(QDialog):
     def change_lines(self, text):
         self.memo_data["line_range"] = text
         self.update_preview(text)
+        self.apply_lines_timer.start()
+
+    def apply_line_range(self):
         self.controller.refresh_sticker_content(self.memo_data["id"])
 
     def update_preview(self, line_range):
@@ -547,26 +597,7 @@ class StickerDetailDialog(QDialog):
             return
             
         total = len(self.file_lines)
-        line_range_str = line_range.strip().lower()
-        selected = set()
-        
-        if not line_range_str or line_range_str == "all":
-            selected = set(range(total))
-        else:
-            try:
-                if '-' in line_range_str:
-                    parts = line_range_str.split('-')
-                    start = int(parts[0]) if parts[0] else 1
-                    end = int(parts[1]) if parts[1] else total
-                    start_idx = max(0, start - 1)
-                    end_idx = min(total, end)
-                    selected.update(range(start_idx, end_idx))
-                else:
-                    idx = int(line_range_str)
-                    if 0 < idx <= total:
-                        selected.add(idx - 1)
-            except Exception:
-                pass
+        selected = parse_line_range(line_range, total) or set()
                 
         html = "<div style='white-space: pre; font-family: Consolas, monospace; line-height: 1.4;'>"
         fm = self.preview_box.fontMetrics()
@@ -630,10 +661,7 @@ class MemoWidget(QWidget):
         
         self.size_grip = QSizeGrip(self.frame)
         self.size_grip.setFixedSize(16, 16)
-        
 
-        self.on_top = self.memo_data.get("on_top", False)
-        
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0,0,0,0)
         top_layout.addStretch()
@@ -658,6 +686,12 @@ class MemoWidget(QWidget):
         self.watcher.fileChanged.connect(self.on_file_changed)
         self.watcher.directoryChanged.connect(self.on_dir_changed)
         self.setup_watcher()
+
+        # 저장이 몰려도 한 번만 다시 읽도록 리로드를 디바운스합니다.
+        self.reload_timer = QTimer(self)
+        self.reload_timer.setSingleShot(True)
+        self.reload_timer.setInterval(150)
+        self.reload_timer.timeout.connect(self.load_memo)
 
     def update_style(self):
         # 파싱 컬러/투명도
@@ -759,40 +793,44 @@ class MemoWidget(QWidget):
         if not self.memo_file:
             self.text_edit.setPlainText("메모 파일이 설정되지 않았습니다.")
             return
-            
+
         try:
-            if not os.path.exists(self.memo_file):
-                os.makedirs(self.memo_dir, exist_ok=True)
-                with open(self.memo_file, "w", encoding="utf-8") as f:
-                    f.write("새로운 스티커입니다!\n\n여기에 메모를 작성하세요.")
-                    
             with open(self.memo_file, "r", encoding="utf-8") as f:
                 content = f.read()
-                
-            # Filter by lines
-            line_range = self.memo_data.get("line_range", "all")
-            filtered_content = filter_lines(content, line_range)
-            
-
-            if self.memo_data.get("use_markdown", False):
-                self.text_edit.setMarkdown(filtered_content)
-            else:
-                self.text_edit.setPlainText(filtered_content)
-
+        except FileNotFoundError:
+            # iCloud 오프로드 등으로 잠깐 안 보이는 원본을 덮어쓰지 않도록
+            # 파일을 새로 만들지 않고 안내만 표시합니다.
+            self.text_edit.setPlainText(
+                f"메모 파일이 없습니다:\n{self.memo_file}\n\n"
+                "'📂 변경'으로 경로를 다시 지정하거나 '📝 열기'로 파일을 만드세요."
+            )
+            return
         except (OSError, UnicodeError):
             logger.exception("Failed to load memo file: %s", self.memo_file)
             self.text_edit.setPlainText(
                 f"메모 파일을 불러오지 못했습니다.\n{self.memo_file}"
             )
+            return
+
+        filtered_content = filter_lines(
+            content, self.memo_data.get("line_range", "all")
+        )
+        if self.memo_data.get("use_markdown", False):
+            self.text_edit.setMarkdown(filtered_content)
+        else:
+            self.text_edit.setPlainText(filtered_content)
 
     def on_file_changed(self, path):
-        QTimer.singleShot(100, self.load_memo)
-        
+        self.schedule_reload()
+
     def on_dir_changed(self, path):
         if self.memo_file and os.path.exists(self.memo_file):
             if self.memo_file not in self.watcher.files():
                 self.watcher.addPath(self.memo_file)
-            QTimer.singleShot(100, self.load_memo)
+            self.schedule_reload()
+
+    def schedule_reload(self):
+        self.reload_timer.start()
 
     def mousePressEvent(self, event):
         if self.edit_mode and event.button() == Qt.MouseButton.LeftButton:
@@ -1145,10 +1183,25 @@ class SettingsWindow(QWidget):
         self.controller.set_all_edit_mode(False)
         event.accept()
 
+
+def clamp_widget_into_screen(widget):
+    """분리된 모니터 등으로 화면 밖에 놓인 창을 보이는 영역 안으로 되돌립니다."""
+    center = widget.geometry().center()
+    for screen in QApplication.screens():
+        if screen.geometry().contains(center):
+            return
+    available = QApplication.primaryScreen().availableGeometry()
+    geometry = widget.geometry()
+    x = max(available.left(), min(geometry.x(), available.right() - geometry.width()))
+    y = max(available.top(), min(geometry.y(), available.bottom() - geometry.height()))
+    widget.move(x, y)
+
+
 class AppController(QObject):
     def __init__(self, app):
         super().__init__()
         self.app = app
+        self.first_run = not os.path.exists(CONFIG_FILE)
         self.config = load_config()
         self.widgets = {}  # id -> MemoWidget
         self.boss_key_active = False
@@ -1216,6 +1269,7 @@ class AppController(QObject):
 
     def spawn_sticker(self, memo_data, edit_mode=False):
         w = MemoWidget(memo_data)
+        clamp_widget_into_screen(w)
         w.set_edit_mode(edit_mode)
         w.show()
         self.widgets[memo_data["id"]] = w
@@ -1344,7 +1398,9 @@ def main():
         )
 
     app.setWindowIcon(create_tray_icon())
-    controller.show_settings()
+    # 설정창은 첫 실행 때만 자동으로 엽니다. 자동 시작 시마다 뜨지 않게 합니다.
+    if controller.first_run:
+        controller.show_settings()
 
     result = app.exec()
     if hotkey_registered:
