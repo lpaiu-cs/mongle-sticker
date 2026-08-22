@@ -49,11 +49,19 @@ jobs:
         run: |
           pyinstaller --clean --noconsole --onefile --icon=icon.ico --version-file version.txt --name "몽글몽글 스티커" main.py
 
+      # GitHub 업로드 API는 한글 파일명을 default로 치환하므로,
+      # 릴리스 자산은 예측 가능한 ASCII 이름(버전 포함)으로 올립니다.
+      - name: Rename Executable for Release Asset
+        run: |
+          $version = python -c "import _version; print(_version.__version__)"
+          Copy-Item -LiteralPath "dist/몽글몽글 스티커.exe" -Destination "dist/MongleSticker-$version.exe"
+          Get-ChildItem dist
+
       - name: Upload Artifact for Release Job
         uses: actions/upload-artifact@v4
         with:
           name: windows-executable
-          path: dist/몽글몽글 스티커.exe
+          path: dist/MongleSticker-*.exe
           retention-days: 1
 
   release:
@@ -71,7 +79,7 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/몽글몽글 스티커.exe
+          files: dist/MongleSticker-*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:

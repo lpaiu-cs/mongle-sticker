@@ -88,3 +88,5 @@ pyinstaller --clean --noconsole --onefile --icon=icon.ico --version-file version
 3. `git push origin main --follow-tags`
 
 `v`로 시작하는 태그가 푸시되면 `.github/workflows/release.yml`이 Windows 실행 파일을 빌드해 GitHub Release에 업로드합니다. 워크플로는 빌드 전에 태그와 `_version.py`가 일치하는지 검사하고, 어긋나면 실패합니다. 따라서 버전이 맞지 않는 릴리스는 발행되지 않습니다.
+
+GitHub 업로드 API가 한글 파일명을 치환하므로, 릴리스 자산은 `MongleSticker-<버전>.exe`(예: `MongleSticker-1.2.0.exe`) 이름으로 업로드됩니다. exe 자체의 내부 메타데이터와 로컬 빌드 결과물은 기존대로 `몽글몽글 스티커.exe`입니다.
