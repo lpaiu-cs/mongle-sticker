@@ -11,14 +11,48 @@ import uuid
 import winreg
 from logging.handlers import RotatingFileHandler
 
-from PyQt6.QtCore import (QAbstractNativeEventFilter, QFileSystemWatcher, QObject,
-                          QTimer, QUrl, Qt, pyqtSignal)
-from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
-                             QFontDialog, QFrame, QGraphicsDropShadowEffect,
-                             QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
-                             QPushButton, QScrollArea, QSizeGrip, QSlider,
-                             QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget)
+from PyQt6 import sip
+from PyQt6.QtCore import (
+    QAbstractNativeEventFilter,
+    QFileSystemWatcher,
+    QLockFile,
+    QObject,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QPainter,
+    QPixmap,
+)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QFontDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizeGrip,
+    QSlider,
+    QSystemTrayIcon,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from _version import __version__ as VERSION
 
@@ -58,8 +92,8 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
             msg = ctypes.wintypes.MSG.from_address(int(message))
             if msg.message == WM_HOTKEY:
                 self.controller.toggle_boss_key()
-                return True, 0
-        return False, 0
+                return True, sip.voidptr(0)
+        return False, sip.voidptr(0)
 
 
 def parse_version(value):
@@ -104,6 +138,7 @@ class UpdateChecker(QObject):
             if release_url and is_newer_version(latest_tag, APP_VERSION):
                 self.update_available.emit(latest_tag, release_url)
         except Exception as error:
+            logger.exception("Update check failed")
             self.check_failed.emit(str(error))
 
 
@@ -201,11 +236,11 @@ def set_autostart(enable=True):
 
 def migrate_config(config):
     if not isinstance(config, dict) or not isinstance(config.get("memos"), list):
-        raise ValueError("Invalid configuration structure")
+        raise TypeError("Invalid configuration structure")
 
     for memo in config["memos"]:
         if not isinstance(memo, dict):
-            raise ValueError("Invalid memo configuration")
+            raise TypeError("Invalid memo configuration")
         memo.setdefault("id", str(uuid.uuid4()))
         memo.setdefault("memo_file", "")
         memo.setdefault("color", "#FFF0F5")
@@ -802,7 +837,7 @@ class MemoWidget(QWidget):
             # 파일을 새로 만들지 않고 안내만 표시합니다.
             self.text_edit.setPlainText(
                 f"메모 파일이 없습니다:\n{self.memo_file}\n\n"
-                "'📂 변경'으로 경로를 다시 지정하거나 '📝 열기'로 파일을 만드세요."
+                "원본 파일을 복원하거나 설정의 '변경'으로 기존 파일을 선택하세요."
             )
             return
         except (OSError, UnicodeError):
@@ -832,17 +867,22 @@ class MemoWidget(QWidget):
     def schedule_reload(self):
         self.reload_timer.start()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = a0
+        assert event is not None
         if self.edit_mode and event.button() == Qt.MouseButton.LeftButton:
             self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, a0):
+        event = a0
+        assert event is not None
         if self.edit_mode and event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, 'drag_position'):
             self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, a0):
+        event = a0
         super().resizeEvent(event)
         self.size_grip.move(self.frame.width() - 18, self.frame.height() - 18)
 
@@ -916,8 +956,22 @@ class StickerRow(QFrame):
 
     def open_file(self):
         file_path = self.memo_data.get("memo_file", "")
-        if file_path and os.path.exists(file_path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(
+                self,
+                "메모 파일 없음",
+                "연결된 메모 파일을 찾을 수 없습니다.\n"
+                "원본 파일을 복원하거나 '변경'으로 기존 파일을 선택해주세요.\n"
+                f"{file_path}",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(file_path)):
+            QMessageBox.warning(
+                self,
+                "파일 열기 실패",
+                "메모 파일을 열지 못했습니다. 연결된 기본 앱을 확인해주세요.\n"
+                f"{file_path}",
+            )
 
     def change_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "메모 파일 선택", BASE_DIR, "Text Files (*.txt);;All Files (*)")
@@ -1073,21 +1127,23 @@ class SettingsWindow(QWidget):
         
         self.rows = []
 
-    def title_press(self, event):
+    def title_press(self, a0):
+        event = a0
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
-    def title_move(self, event):
+    def title_move(self, a0):
+        event = a0
         if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, 'drag_position'):
             self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
     def load_list(self):
-        for i in reversed(range(self.list_layout.count())): 
-            widget_to_remove = self.list_layout.itemAt(i).widget()
-            self.list_layout.removeWidget(widget_to_remove)
-            widget_to_remove.setParent(None)
+        for row in self.rows:
+            self.list_layout.removeWidget(row)
+            row.setParent(None)
+            row.deleteLater()
         self.rows.clear()
         
         config = self.controller.config
@@ -1103,7 +1159,9 @@ class SettingsWindow(QWidget):
             
         file_path = os.path.normpath(file_path)
         new_id = str(uuid.uuid4())
-        screen = QApplication.primaryScreen().geometry()
+        primary_screen = QApplication.primaryScreen()
+        assert primary_screen is not None
+        screen = primary_screen.geometry()
         memo_data = {
             "id": new_id,
             "memo_file": file_path,
@@ -1125,7 +1183,8 @@ class SettingsWindow(QWidget):
         self.controller.destroy_sticker(memo_id)
         self.load_list()
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = a0
         super().showEvent(event)
         self.load_list()
         self.controller.set_all_edit_mode(True)
@@ -1172,7 +1231,9 @@ class SettingsWindow(QWidget):
             )
         self.update_startup_btn_text()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = a0
+        assert event is not None
         if not self.controller.save_all_geometries():
             QMessageBox.warning(
                 self,
@@ -1190,7 +1251,9 @@ def clamp_widget_into_screen(widget):
     for screen in QApplication.screens():
         if screen.geometry().contains(center):
             return
-    available = QApplication.primaryScreen().availableGeometry()
+    primary_screen = QApplication.primaryScreen()
+    assert primary_screen is not None
+    available = primary_screen.availableGeometry()
     geometry = widget.geometry()
     x = max(available.left(), min(geometry.x(), available.right() - geometry.width()))
     y = max(available.top(), min(geometry.y(), available.bottom() - geometry.height()))
@@ -1313,11 +1376,13 @@ class AppController(QObject):
 
     def setup_tray_menu(self):
         menu = QMenu()
-        settings_action = menu.addAction("⚙️ 스티커 관리 / 크기 조절")
+        settings_action = QAction("⚙️ 스티커 관리 / 크기 조절", menu)
         settings_action.triggered.connect(self.show_settings)
+        menu.addAction(settings_action)
         menu.addSeparator()
-        exit_action = menu.addAction("❌ 프로그램 종료")
+        exit_action = QAction("❌ 프로그램 종료", menu)
         exit_action.triggered.connect(self.app.quit)
+        menu.addAction(exit_action)
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.show()
 
@@ -1352,6 +1417,25 @@ def main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    instance_lock = QLockFile(os.path.join(BASE_DIR, "instance.lock"))
+    instance_lock.setStaleLockTime(0)
+    if not instance_lock.tryLock(0):
+        if instance_lock.error() == QLockFile.LockError.LockFailedError:
+            QMessageBox.information(
+                None,
+                "이미 실행 중",
+                "몽글몽글 스티커가 이미 실행 중입니다.\n"
+                "시스템 트레이 아이콘에서 설정을 열어주세요.",
+            )
+            sys.exit(0)
+        QMessageBox.critical(
+            None,
+            "실행 실패",
+            "중복 실행 방지 잠금 파일을 만들지 못했습니다.\n"
+            f"저장 폴더의 접근 권한을 확인해주세요:\n{BASE_DIR}",
+        )
+        sys.exit(1)
 
     # 툴팁(QToolTip) 블랙박스 버그 방지용 글로벌 스타일시트 적용
     app.setStyleSheet("""
