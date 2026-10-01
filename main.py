@@ -1,5 +1,4 @@
 import ctypes
-import ctypes.wintypes
 import json
 import logging
 import os
@@ -11,9 +10,7 @@ import uuid
 import winreg
 from logging.handlers import RotatingFileHandler
 
-from PyQt6 import sip
 from PyQt6.QtCore import (
-    QAbstractNativeEventFilter,
     QFileSystemWatcher,
     QLockFile,
     QObject,
@@ -58,8 +55,6 @@ from _version import __version__ as VERSION
 
 APP_NAME = "MongleSticker"
 APP_VERSION = f"v{VERSION}"
-WM_HOTKEY = 0x0312
-HOTKEY_ID = 1
 
 if sys.platform == "win32":
     appdata_path = os.path.join(
@@ -81,20 +76,6 @@ _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message
 logging.getLogger().addHandler(_log_handler)
 logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(APP_NAME)
-
-class GlobalHotkeyFilter(QAbstractNativeEventFilter):
-    def __init__(self, controller):
-        super().__init__()
-        self.controller = controller
-
-    def nativeEventFilter(self, eventType, message):
-        if eventType == b"windows_generic_MSG" or eventType == b"windows_dispatcher_MSG":
-            msg = ctypes.wintypes.MSG.from_address(int(message))
-            if msg.message == WM_HOTKEY:
-                self.controller.toggle_boss_key()
-                return True, sip.voidptr(0)
-        return False, sip.voidptr(0)
-
 
 def parse_version(value):
     """Convert release tags such as v1.2.3 to comparable integer tuples.
@@ -1267,7 +1248,6 @@ class AppController(QObject):
         self.first_run = not os.path.exists(CONFIG_FILE)
         self.config = load_config()
         self.widgets = {}  # id -> MemoWidget
-        self.boss_key_active = False
         self.release_url = ""
         self.is_shutting_down = False
 
@@ -1285,14 +1265,6 @@ class AppController(QObject):
         self.update_checker.update_available.connect(self.notify_update)
         self.update_checker.check_failed.connect(self.on_update_check_failed)
         self.check_updates()
-
-    def toggle_boss_key(self):
-        self.boss_key_active = not self.boss_key_active
-        for widget in self.widgets.values():
-            if self.boss_key_active:
-                widget.hide()
-            else:
-                widget.show()
 
     def check_updates(self):
         self.update_thread = threading.Thread(
@@ -1453,45 +1425,12 @@ def main():
     controller = AppController(app)
     app.aboutToQuit.connect(controller.shutdown)
 
-    hotkey_filter = GlobalHotkeyFilter(controller)
-    app.installNativeEventFilter(hotkey_filter)
-
-    mod_alt = 0x0001
-    mod_control = 0x0002
-    virtual_key_m = 0x4D
-    hotkey_registered = False
-    try:
-        hotkey_registered = bool(
-            ctypes.windll.user32.RegisterHotKey(
-                None, HOTKEY_ID, mod_alt | mod_control, virtual_key_m
-            )
-        )
-    except Exception:
-        logger.exception("Global hotkey registration raised an error")
-
-    if not hotkey_registered:
-        logger.warning("Global hotkey Ctrl+Alt+M could not be registered")
-        QTimer.singleShot(
-            0,
-            lambda: controller.tray_icon.showMessage(
-                "단축키 등록 실패",
-                "Ctrl+Alt+M을 다른 프로그램이 사용 중일 수 있습니다.",
-                QSystemTrayIcon.MessageIcon.Warning,
-                5000,
-            ),
-        )
-
     app.setWindowIcon(create_tray_icon())
     # 설정창은 첫 실행 때만 자동으로 엽니다. 자동 시작 시마다 뜨지 않게 합니다.
     if controller.first_run:
         controller.show_settings()
 
     result = app.exec()
-    if hotkey_registered:
-        try:
-            ctypes.windll.user32.UnregisterHotKey(None, HOTKEY_ID)
-        except Exception:
-            logger.exception("Failed to unregister the global hotkey")
     sys.exit(result)
 
 
