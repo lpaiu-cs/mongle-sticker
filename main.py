@@ -653,9 +653,8 @@ class MemoWidget(QWidget):
         self.apply_pin_state()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        self.setGeometry(memo_data.get("x", 100), memo_data.get("y", 100), 
-                         memo_data.get("w", 320), memo_data.get("h", 400))
-        
+        self.restore_geometry()
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         
@@ -782,6 +781,10 @@ class MemoWidget(QWidget):
         else:
             flags |= Qt.WindowType.WindowStaysOnBottomHint
         self.setWindowFlags(flags)
+
+    def restore_geometry(self):
+        self.setGeometry(self.memo_data.get("x", 100), self.memo_data.get("y", 100),
+                         self.memo_data.get("w", 320), self.memo_data.get("h", 400))
 
     def set_edit_mode(self, enabled):
         self.edit_mode = enabled
@@ -1261,6 +1264,18 @@ class AppController(QObject):
         for memo_data in self.config.get("memos", []):
             self.spawn_sticker(memo_data, edit_mode=False)
 
+        # 부팅 직후 자동 실행되면 모니터 구성·배율(DPI)이 아직 확정되지 않아
+        # Windows가 스티커를 엉뚱한 위치로 옮깁니다. 화면 구성이 바뀌고 잠잠해지면
+        # 저장된 위치로 되돌립니다.
+        self.screen_settle_timer = QTimer(self)
+        self.screen_settle_timer.setSingleShot(True)
+        self.screen_settle_timer.setInterval(1000)
+        self.screen_settle_timer.timeout.connect(self.restore_sticker_positions)
+        app.screenAdded.connect(self.watch_screen)
+        app.screenRemoved.connect(lambda _: self.screen_settle_timer.start())
+        for screen in app.screens():
+            self.watch_screen(screen)
+
         self.update_checker = UpdateChecker()
         self.update_checker.update_available.connect(self.notify_update)
         self.update_checker.check_failed.connect(self.on_update_check_failed)
@@ -1308,6 +1323,19 @@ class AppController(QObject):
         w.set_edit_mode(edit_mode)
         w.show()
         self.widgets[memo_data["id"]] = w
+
+    def watch_screen(self, screen):
+        screen.geometryChanged.connect(lambda _: self.screen_settle_timer.start())
+        screen.logicalDotsPerInchChanged.connect(lambda _: self.screen_settle_timer.start())
+        self.screen_settle_timer.start()
+
+    def restore_sticker_positions(self):
+        logger.info("Screen configuration changed; restoring sticker positions")
+        # 편집 중인 스티커는 아직 저장되지 않은 위치일 수 있으므로 건드리지 않습니다.
+        for w in self.widgets.values():
+            if not w.edit_mode:
+                w.restore_geometry()
+                clamp_widget_into_screen(w)
 
     def destroy_sticker(self, memo_id):
         if memo_id in self.widgets:
